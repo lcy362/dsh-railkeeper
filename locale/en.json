@@ -1,0 +1,7 @@
+{
+  "meta": {
+    "title": "Railkeeper",
+    "description": "Reorder, rename, hide, re-icon and group the panels of the left rail. Changes apply instantly and survive restarts.",
+    "detail": "docs/DETAIL.md"
+  }
+}

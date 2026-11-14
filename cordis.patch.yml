@@ -1,0 +1,6 @@
+# dsh-railkeeper bundle for DeepSeek Harness.
+# The host half stores the configuration and serves the loopback API; the
+# browser half rewrites the left-rail registrations and owns the Settings page.
+- insert:
+    - id: railkeeper
+      name: dsh-railkeeper

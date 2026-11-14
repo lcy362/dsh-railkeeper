@@ -1,0 +1,67 @@
+{
+  "name": "dsh-railkeeper",
+  "version": "0.1.0",
+  "description": "Railkeeper for DeepSeek Harness: reorder, rename, hide, re-icon and group the left rail panels. Changes apply instantly and survive restarts.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lcy362/dsh-railkeeper.git"
+  },
+  "homepage": "https://github.com/lcy362/dsh-railkeeper#readme",
+  "bugs": {
+    "url": "https://github.com/lcy362/dsh-railkeeper/issues"
+  },
+  "author": "lcy362",
+  "type": "module",
+  "main": "src/host/index.js",
+  "exports": {
+    ".": "./src/host/index.js",
+    "./client": "./lib/client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src/**/*.js",
+    "lib/client.js",
+    "scripts",
+    "test",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "docs",
+    "icon.svg",
+    "README.md",
+    "README.zh-CN.md",
+    "LICENSE"
+  ],
+  "license": "MIT",
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "dsh-plugin",
+    "sidebar",
+    "panellist",
+    "rail"
+  ],
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0",
+    "dsh": ">=0.2.0-rc.2 <0.3.0-0"
+  },
+  "scripts": {
+    "build": "node scripts/build-client.mjs",
+    "test": "node --test \"test/*.test.mjs\""
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-sidebar",
+        "@deepseek-ai/dsh-client-ui-settings-general",
+        "@deepseek-ai/dsh-client-locale"
+      ]
+    }
+  }
+}
