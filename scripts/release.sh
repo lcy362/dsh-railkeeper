@@ -121,6 +121,11 @@ gh release create "${TAG}" \
   "${ASSET_NAME}" >/dev/null
 
 rm -f "${ASSET_NAME}" "${PACKED}"
+
+# gh release create 是在服务端建 tag 的，本地不会自动出现。不同步的话
+# 本地 git tag 会一直缺这个版本，下次查「tag 是否已存在」就会误判。
+git fetch --tags origin >/dev/null 2>&1 || true
+
 ok "Release ${TAG} 已发布"
 
 echo
