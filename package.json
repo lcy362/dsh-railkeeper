@@ -48,7 +48,9 @@
   },
   "scripts": {
     "build": "node scripts/build-client.mjs",
-    "test": "node --test \"test/*.test.mjs\""
+    "test": "node --test \"test/*.test.mjs\"",
+    "release": "bash scripts/release.sh",
+    "prepublishOnly": "npm test"
   },
   "dsh": {
     "bundle": {
