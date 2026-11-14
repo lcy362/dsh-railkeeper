@@ -77,7 +77,8 @@ for required in \
   package/cordis.patch.yml \
   package/src/host/index.js \
   package/src/client/index.js \
-  package/src/shared/catalog.js \
+  package/src/shared/config.js \
+  package/lib/client.js \
   package/LICENSE
 do
   echo "${LISTING}" | grep -qx "${required}" || die "包里缺 ${required}"
