@@ -66,16 +66,21 @@ export function createConfigStore(api, i18n) {
   async function saveNow() {
     if (disposed || inFlight || !state.dirty) return
     inFlight = true
-    const revision = state.revision
+    // 判「这次写入期间又有没有新改动」只能比配置对象本身。
+    // 不能用 revision：`set({saving:true})` 自己也会推进它，于是每次保存回来
+    // 都会被判成「又脏了」→ 120ms 后再存一次 → 「保存中」永远闪烁、宿主被
+    // 每秒七八次写盘。配置每次改动都是一个新对象，身份比较才是真信号。
+    const sent = state.config
     set({ saving: true })
     try {
-      const result = await api.save(state.config)
+      const result = await api.save(sent)
       if (disposed) return
       const cleaned = normalizeConfig(result?.config)
-      const dirty = state.revision !== revision
+      const dirty = state.config !== sent
       set({
         status: 'ready',
-        config: cleaned.ok ? cleaned.config : state.config,
+        // 写入期间又有新改动时保留本地那份：用服务端回包覆盖会把刚敲的东西吃掉。
+        config: dirty || !cleaned.ok ? state.config : cleaned.config,
         profileId: typeof result?.profileId === 'string' ? result.profileId : state.profileId,
         health: result?.health ?? state.health,
         saving: false,

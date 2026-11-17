@@ -18,12 +18,14 @@ Changes save automatically, shortly after you stop editing. The status line unde
 
 ## Limitations
 
-- **One rail manager at a time.** Railkeeper rewrites the `sidebar.panellist` registrations the sidebar shell reads. Another plugin doing the same will overwrite it and vice versa. If a just-disabled plugin's code is still in the page (no reload since), Railkeeper stops rewriting order and names and shows a banner; reload the page to recover. Hide markers keep working during that time.
+- **Railkeeper shadows, it does not rewrite.** For a panel it needs to change, Railkeeper registers its own entry in `sidebar.panellist` with the same id and a priority one step below every other registrant in that cell; the host renders the lowest priority. It never mutates another plugin's entry, so a second rail manager cannot start a write-trading loop with it. Panels you have not touched are not shadowed at all, which keeps presentation-only decorations (the plugin market's update badge) intact.
+- **A shadowed cell loses the market badge.** The market only decorates a cell that has exactly one registration, so it withdraws its badge while a shadow is present. Railkeeper does not fight this; the badge returns when the shadow goes away.
+- **Priority collision is reported, not fought.** If another plugin registers a lower priority than Railkeeper's shadow for the same id, the settings page reports the affected panels and asks for a reload. Railkeeper deliberately does not re-register lower — that race is what used to hang the page.
 - **A hidden panel is still mounted.** Hiding is a CSS-level hide of the rail row, not an unload. The panel's own code keeps running.
 - **A group row opens a menu.** The click is taken over in the capture phase so the shell does not navigate away. A `main` page is still registered for the group, because the shell's More menu routes through the same `selectPanel` call; reaching a group from there shows a plain member list styled like an official entry page.
 - **Icons come from a fixed set of 24.** There is no SVG upload; an imported icon name with no equivalent is dropped with a warning rather than stored.
 - **Configuration follows the profile, not the window.** Two windows on the same profile share one configuration.
-- **The conflict detector needs three consecutive observations** before it pauses rewriting, so a single stray write does not trip it.
+- **Convergence is signature-based.** A shadow is re-registered only when its order, label, icon or hidden state changes. The wrapped component is resolved at render time, so another plugin re-registering or re-decorating its own entry does not force Railkeeper to re-register.
 
 ## Configuration
 

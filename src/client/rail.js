@@ -2,15 +2,24 @@
  * dsh-railkeeper —— 左侧栏运行时。
  *
  * 做的事：
- * 1. 读 `sidebar.panellist` 的注册表，记下每个面板的原始 order/label/component；
- * 2. 按配置改写 order、label、图标组件，并把“隐藏/已分组”写成一个标记节点；
+ * 1. 读 `sidebar.panellist` 的注册表，记下每个面板的原生 order/label/component；
+ * 2. 按配置算出计划，为需要改动的面板**注册自己的遮蔽条目**（同 id、更低 priority），
+ *    由包裹组件负责「隐藏」标记与自定义图标；
  * 3. 分组行：额外注册一条 `sidebar.panellist` 条目 + 同 key 的 `main` 页面；
  * 4. 用一段由本插件拥有的样式把带标记的整行隐藏。
  *
- * 为什么要“nudge”：注册表条目上的 options 是普通对象，改它不会通知订阅者。
- * 注册一个临时条目再立刻释放，可以把一次批量通知推进微任务队列，让侧栏
- * 重新读取 entriesOfSlot。这个做法与 dsh-panellist 相同，属于内核当前实现
- * 的内部接缝；若未来失效，隐藏会退化为“不生效”，但不会影响面板加载。
+ * 为什么是「遮蔽」而不是「原地改写」：
+ *
+ * 早期版本直接改别的插件注册条目上的 order/label/component。槽位注册表里那些
+ * options 是普通对象，改它不产生通知，于是当时靠「注册一个临时条目再释放」
+ * 去推一帧。但只要有第二个插件也在观察同一个槽位（典型是插件市场，它会给
+ * `plugins` 这一格套一层更新角标，并且自己也在监听 `sidebar.panellist`），
+ * 两边就会互相触发：我们改 → 它重注册 → 槽位通知 → 我们再改……这条链全在
+ * 微任务里，事件循环没有机会让出，界面直接卡死（用户看到的就是「点合并就卡住」）。
+ *
+ * 现在改成注册自己的条目：注册表按 priority 遮蔽，我们的条目只是「多出来的一层」，
+ * 不碰别人的对象，别人的 reconcile 看到条目数变了会自己收手，两边一次收敛。
+ * 卸载时只需要 dispose 自己的条目，不必回滚别人的字段，也不会再有代际竞态。
  */
 import * as React from 'react'
 import * as ReactDOM from 'react-dom'
@@ -18,11 +27,11 @@ import { GROUP_ENTRY_PREFIX, RAIL_ENTRY_PREFIX } from '../shared/config.js'
 import { Glyph } from './icons.js'
 import { placeMenu } from './menu.js'
 import { buildPlan } from './model.js'
+import { diffShadows, planShadows } from './shadow.js'
 
 const h = React.createElement
 const STYLE_ID = 'dsh-railkeeper-styles'
 const RAIL_ATTR = 'data-rk-rail'
-
 /**
  * 把弹出菜单挂到 body 上的函数。
  *
@@ -36,15 +45,6 @@ function resolvePortal(namespace) {
   return null
 }
 const PORTAL = resolvePortal(ReactDOM)
-
-/**
- * 所有权标记，挂在注册表条目对象上。
- *
- * 一轮 apply 就是一个「代」。HMR 重载或插件重载时，旧代的 dispose 可能在新代
- * 重建之后才跑；只比“字段值是否等于我写下的值”挡不住这种情况——两代会写下
- * 完全相同的值。所以这里比的是身份：谁最后认领了这个条目，谁才有回滚权。
- */
-const ENTRY_OWNER = Symbol.for('dsh-railkeeper.owner')
 
 const CSS = `
 [${RAIL_ATTR}] > *:has([data-rk-hidden]) { display: none !important; }
@@ -171,33 +171,24 @@ function resolveLabel(label) {
 export function createRailController({ ctx, store, i18n, api, version }) {
   let started = false
   let disposed = false
-  let slotReady = false
   let applying = false
   let scheduled = false
   let snapshotVersion = 0
-  /** 检测到其它改写方后停止改写顺序/名称/图标，避免双方无限对写。 */
-  let paused = false
   let lastReportAt = 0
   /**
-   * 本插件最后一次写给每个面板的 order。
+   * 本插件注册的「遮蔽条目」。
    *
-   * 直接记“写下了什么”，而不是“某一轮快照读了什么”——快照会过期，
-   * 而这份账本只在真正写入时才更新，永远和我们的意图一致。
-   * @type {Map<string, string>}
+   * 每条记录带一份签名：order、自定义名称、图标、隐藏状态，以及被包裹组件的身份。
+   * 签名不变就不重新注册——这是收敛的唯一保证。早期版本没有这一层，于是每次
+   * 槽位通知都重写一遍，和别的观察者形成无界微任务链。
+   * @type {Map<string, { dispose: () => void, signature: string, priority: number }>}
    */
-  const lastWrote = new Map()
-  /**
-   * 与另一个「也在管左侧栏」的插件冲突的证据。
-   *
-   * 本插件改的是注册表条目上的 order/label/component。另一个同类插件会把这些
-   * 值改回它自己想要的样子；两边都在监听槽位变化，于是形成一个无限来回。
-   * 检测方式很简单：写完之后过一帧再读，理应还是我们写的值。
-   *
-   * 连续撞到 3 次就停手并如实报告，绝不和对方对着写——用户看到的应该是
-   * 一条「有别的插件在抢」的提示，而不是一个发热的循环。
-   */
-  let conflict = null
-  let conflictStrikes = 0
+  const shadows = new Map()
+  /** 我们自己的包裹组件：用来把「我们注册的条目」从原生条目里区分出来。 */
+  const ownWrappers = new Set()
+  /** 原生条目的 label / component 快照（设置页预览、回退名称用）。 */
+  const nativeLabels = new Map()
+  const nativeComponents = new Map()
   /** 当前展开的分组弹出菜单（null = 没有）。 */
   let openGroup = null
   /** 累计打开次数：判断「点击有没有被接管」比 flyoutOpen 可靠，后者会被关掉。 */
@@ -224,12 +215,6 @@ export function createRailController({ ctx, store, i18n, api, version }) {
   let flyoutCleanup = null
   /** @type {ReturnType<typeof buildPlan>} */
   let plan = buildPlan(store.getSnapshot().config, [])
-  /** @type {Map<string, { entry: any, order: unknown, label: unknown, component: any }>} */
-  const originals = new Map()
-  /** @type {Map<string, any>} */
-  const wrappers = new Map()
-  /** @type {Map<string, any>} */
-  const labelThunks = new Map()
   /** @type {Map<string, string>} */
   const groupSignatures = new Map()
   /** @type {Map<string, Array<() => void>>} */
@@ -247,12 +232,8 @@ export function createRailController({ ctx, store, i18n, api, version }) {
   let unsubscribeDeclared = null
   /** @type {null | (() => void)} */
   let externalReloadCleanup = null
-  /**
-   * 本代的所有权凭证：每次创建 controller 都是一个新的对象。
-   * 用对象身份而不是数字，因为 `Symbol.for` 是跨模块实例共享的，而
-   * HMR 每次都会重新求值整个 bundle——数字会在新实例里从 0 重来。
-   */
-  const owner = {}
+  /** 上一次检测到的「被别的插件盖住」的面板 id。 */
+  let overshadowed = []
 
   function notify() {
     for (const listener of [...listeners]) {
@@ -289,25 +270,52 @@ export function createRailController({ ctx, store, i18n, api, version }) {
     if (!nav.hasAttribute(RAIL_ATTR)) nav.setAttribute(RAIL_ATTR, '')
   }
 
-  /** 当前注册表里由其它插件注册的面板条目。 */
-  function realEntries() {
-    let entries = []
+  /**
+   * 槽位里的全部条目（含被遮蔽的）。
+   *
+   * `entries()` 是新内核才有的；老内核只有 `entriesOfSlot()`（每格只给赢家）。
+   * 没有 `entries()` 时退化成赢家列表：遮蔽仍能工作，只是看不到被盖住的那份。
+   */
+  function allEntries() {
     try {
-      entries = ctx.slots.entriesOfSlot('sidebar.panellist')
+      if (typeof ctx.slots.entries === 'function') {
+        return ctx.slots.entries('sidebar.panellist') ?? []
+      }
+      return ctx.slots.entriesOfSlot('sidebar.panellist') ?? []
     } catch {
       return []
     }
+  }
+
+  /** @param {any} entry */
+  function isOwnEntry(entry) {
+    return entry !== undefined && entry !== null && ownWrappers.has(entry.component)
+  }
+
+  /**
+   * 其它插件注册的面板条目（不含本插件自己的遮蔽条目与分组行）。
+   * @param {any[]} [source]
+   */
+  function nativeEntries(source) {
+    const entries = source ?? allEntries()
     return entries.filter((entry) => {
       const id = entry?.options?.id
-      return typeof id === 'string' && !id.startsWith(RAIL_ENTRY_PREFIX)
+      if (typeof id !== 'string') return false
+      if (id.startsWith(RAIL_ENTRY_PREFIX)) return false
+      return !isOwnEntry(entry)
     })
   }
 
   /**
    * 把条目投影成 live 面板列表（按 order、再按注册顺序）。
+   *
+   * 同一 id 可能有多条：插件市场会给 `plugins` 再注册一层更新角标。注册表已按
+   * priority 排好序，第一条就是真正渲染的那个——后面的必须丢掉，否则同一个面板
+   * 会被数成两行，顺序比较也永远判成「变了」，遮蔽条目于是反复重注册。
    * @param {any[]} entries
    */
   function livePanels(entries) {
+    const seen = new Set()
     return entries
       .map((entry, index) => ({
         id: entry.options.id,
@@ -316,64 +324,25 @@ export function createRailController({ ctx, store, i18n, api, version }) {
         index,
       }))
       .sort((a, b) => a.order - b.order || a.index - b.index)
+      .filter((item) => {
+        if (typeof item.id !== 'string' || seen.has(item.id)) return false
+        seen.add(item.id)
+        return true
+      })
       .map(({ id, order, label }) => ({ id, order, label }))
   }
 
   /**
-   * 记录原始值；条目被重新注册时刷新记录。
-   * @param {any[]} entries
-   */
-  function captureOriginals(entries) {
-    const seen = new Set()
-    for (const entry of entries) {
-      const id = entry.options.id
-      seen.add(id)
-      const previous = originals.get(id)
-      if (previous === undefined || previous.entry !== entry) {
-        // `touched` 记录本代写进去的值：卸载时只回滚「仍然是本代写下的」字段。
-        // 否则一个已经被替换掉的旧代会在新代生效后把值改回原始值（HMR / 重载竞态）。
-        originals.set(id, {
-          entry,
-          order: entry.options.order,
-          label: entry.options.label,
-          component: entry.component,
-          touched: {},
-        })
-        wrappers.delete(id)
-      }
-    }
-    for (const id of [...originals.keys()]) {
-      if (!seen.has(id)) {
-        originals.delete(id)
-        wrappers.delete(id)
-        labelThunks.delete(id)
-      }
-    }
-  }
-
-  /** @param {string} id */
-  function stableLabelThunk(id) {
-    let thunk = labelThunks.get(id)
-    if (thunk === undefined) {
-      thunk = () => {
-        const config = store.getSnapshot().config
-        const custom = config.panels?.[id]?.label
-        if (typeof custom === 'string' && custom.length > 0) return custom
-        const original = originals.get(id)?.label
-        return resolveLabel(original) ?? id
-      }
-      labelThunks.set(id, thunk)
-    }
-    return thunk
-  }
-
-  /**
-   * 生成一个面板图标包裹组件：标记 + 自定义图标或原始图标。
+   * 生成一个面板图标包裹组件：标记 + 自定义图标或原生图标。
+   *
+   * 被包裹的组件**在渲染时才解析**（`nativeSourceOf`），不在这里捕获：
+   * 插件市场会给同一格加一层更新角标、之后又可能撤掉，把组件钉死在注册那一刻
+   * 就会要么丢掉角标、要么逼着签名跟着变、要么两边反复重注册。惰性解析之后，
+   * 无论那一格的原生赢家换成谁，我们这一条都不需要重注册。
    * @param {string} id
-   * @param {any} Original
    */
-  function makeWrapper(id, Original) {
-    return function RailkeeperIcon(props) {
+  function makeWrapper(id) {
+    const wrapper = function RailkeeperIcon(props) {
       React.useSyncExternalStore(subscribe, getVersion, getVersion)
       const state = plan.panels.get(id)
       const hidden = state !== undefined && (state.hidden || state.grouped) && props.active !== true
@@ -385,112 +354,90 @@ export function createRailController({ ctx, store, i18n, api, version }) {
       if (state !== undefined && typeof state.icon === 'string' && state.icon.length > 0) {
         return h(React.Fragment, null, marker, h(Glyph, { name: state.icon, size: props.size, active: props.active }))
       }
-      return h(React.Fragment, null, marker, Original === undefined || Original === null ? null : h(Original, props))
+      const Source = nativeSourceOf(id)
+      return h(React.Fragment, null, marker, Source === null ? null : h(Source, props))
+    }
+    ownWrappers.add(wrapper)
+    return wrapper
+  }
+
+  /**
+   * 某一格此刻的原生赢家组件（不含本插件自己的条目）。
+   *
+   * 每次渲染现读注册表：别人换组件、加装饰、撤装饰都能立刻反映出来，而我们的
+   * 遮蔽条目一直不用动。
+   * @param {string} id
+   */
+  function nativeSourceOf(id) {
+    for (const entry of allEntries()) {
+      if (entry?.options?.id !== id) continue
+      if (isOwnEntry(entry)) continue
+      return entry.component ?? null
+    }
+    return null
+  }
+
+  /**
+   * 遮蔽条目的名称：用户改过的名字优先，否则沿用原生名称。
+   * @param {string} id
+   */
+  function shadowLabel(id) {
+    return () => {
+      const override = store.getSnapshot().config.panels?.[id]
+      if (typeof override?.label === 'string' && override.label.length > 0) return override.label
+      return nativeLabels.get(id) ?? id
     }
   }
 
-  /** 给侧栏发一次通知（见文件头说明）。 */
-  function nudge() {
-    if (!slotReady) return
+  /** 释放某个面板的遮蔽条目。 */
+  function disposeShadow(id) {
+    const shadow = shadows.get(id)
+    if (shadow === undefined) return
+    shadows.delete(id)
     try {
-      const dispose = ctx.slots.register({
-        name: 'sidebar.panellist',
-        id: `${RAIL_ENTRY_PREFIX}nudge`,
-        order: 99_999,
-      }, () => null)
-      dispose()
+      shadow.dispose()
     } catch {
-      // 内核对注册/释放的顺序有保护；失败只意味着这一帧不重排。
+      // ignore
     }
   }
 
   /**
-   * 冲突暂停期间的降级路径：只挂/摘图标包裹组件（它承载「隐藏」标记），
-   * 不碰 order 与 label。
-   * @param {any} entry
-   * @param {any} state
-   * @param {any} original
-   */
-  function applyWrapperOnly(entry, state, original) {
-    const id = entry.options.id
-    const needsWrapper = state.hidden || state.grouped || typeof state.icon === 'string'
-    if (needsWrapper) {
-      let wrapper = wrappers.get(id)
-      if (wrapper === undefined) {
-        wrapper = makeWrapper(id, original.component)
-        wrappers.set(id, wrapper)
-      }
-      if (entry.component !== wrapper) {
-        entry.component = wrapper
-        original.touched.component = wrapper
-        return true
-      }
-      return false
-    }
-    if (entry.component !== original.component) {
-      entry.component = original.component
-      delete original.touched.component
-      return true
-    }
-    return false
-  }
-
-  /**
-   * 改写一个面板条目到计划状态。
-   * @param {any} entry
+   * 按计划同步遮蔽条目。
+   *
+   * 只做三件事：多余的要释放、缺的要注册、签名变了的要重注册。签名没变一律不碰——
+   * 这是本插件与其它槽位观察者能收敛的关键。判断本身在 shadow.js 里，纯函数，
+   * 有专门的回归测试（「两个插件共存时有界」）。
    * @param {ReturnType<typeof buildPlan>} nextPlan
+   * @param {any[]} natives
    */
-  function applyEntry(entry, nextPlan) {
-    const id = entry.options.id
-    const state = nextPlan.panels.get(id)
-    if (state === undefined) return false
-    let mutated = false
-    const original = originals.get(id)
-    if (original === undefined) return false
-    if (paused) {
-      // 只保留组件包裹（隐藏标记是我们自己的），顺序/名称/图标一律不再争。
-      return applyWrapperOnly(entry, state, original)
-    }
-    if (entry[ENTRY_OWNER] !== owner) entry[ENTRY_OWNER] = owner
-    if (entry.options.order !== state.order) {
-      entry.options.order = state.order
-      original.touched.order = state.order
-      mutated = true
-    }
-    lastWrote.set(id, String(state.order))
-    const override = store.getSnapshot().config.panels?.[id]
-    const customLabel = typeof override?.label === 'string' && override.label.length > 0
-    if (customLabel) {
-      const thunk = stableLabelThunk(id)
-      if (entry.options.label !== thunk) {
-        entry.options.label = thunk
-        original.touched.label = thunk
-        mutated = true
+  function syncShadows(nextPlan, natives) {
+    const wanted = planShadows(nextPlan, store.getSnapshot().config.panels, natives)
+    const { dispose, register } = diffShadows(shadows, wanted)
+    for (const id of dispose) disposeShadow(id)
+    for (const id of register) {
+      const target = wanted.get(id)
+      if (target === undefined) continue
+      const wrapper = makeWrapper(id)
+      let off
+      try {
+        off = ctx.slots.register({
+          name: 'sidebar.panellist',
+          id,
+          order: target.order,
+          priority: target.priority,
+          label: shadowLabel(id),
+        }, wrapper)
+      } catch {
+        // 注册被拒（同名同 priority 已存在等）：这一格保持原样，不影响其它面板。
+        ownWrappers.delete(wrapper)
+        continue
       }
-    } else if (entry.options.label !== original.label) {
-      if (original.label === undefined) delete entry.options.label
-      else entry.options.label = original.label
-      delete original.touched.label
-      mutated = true
+      shadows.set(id, {
+        dispose: typeof off === 'function' ? off : () => {},
+        signature: target.signature,
+        priority: target.priority,
+      })
     }
-    const needsWrapper = state.hidden || state.grouped || typeof state.icon === 'string'
-    if (needsWrapper) {
-      let wrapper = wrappers.get(id)
-      if (wrapper === undefined) {
-        wrapper = makeWrapper(id, original?.component)
-        wrappers.set(id, wrapper)
-      }
-      if (entry.component !== wrapper) {
-        entry.component = wrapper
-        original.touched.component = wrapper
-        mutated = true
-      }
-    } else if (entry.component !== original.component) {
-      entry.component = original.component
-      delete original.touched.component
-      mutated = true
-    }
-    return mutated
   }
 
   /** @param {string} groupId */
@@ -866,7 +813,7 @@ export function createRailController({ ctx, store, i18n, api, version }) {
     if (state !== undefined && typeof state.icon === 'string' && state.icon.length > 0) {
       return h(Glyph, { name: state.icon, size })
     }
-    const Original = originals.get(id)?.component
+    const Original = nativeComponents.get(id)
     if (Original === undefined || Original === null) return h(Glyph, { name: 'grid', size })
     return h(Original, { size, active: false })
   }
@@ -958,11 +905,10 @@ export function createRailController({ ctx, store, i18n, api, version }) {
     return () => listeners.delete(listener)
   }
 
-  /** 上报一次现场（诊断用，失败静默）。 */
   /**
    * 排一次「渲染落定后」的上报。
    *
-   * rebuild() 改写注册表只是把通知排进队列，React 还没提交；此刻量 DOM 只能
+   * rebuild() 注册条目只是把通知排进队列，React 还没提交；此刻量 DOM 只能
    * 量到上一帧。等一帧后再量，数出来的才是用户真正看到的东西。
    */
   function reportSoon() {
@@ -988,25 +934,8 @@ export function createRailController({ ctx, store, i18n, api, version }) {
     // 用 getClientRects 而不是属性计数，才能证明“隐藏真的生效了”。
     const children = rail === null ? [] : [...rail.children]
     const visible = children.filter((node) => node.getClientRects().length > 0)
-    // 注册表快照只取一次：下面所有结论都出自这一次读取，避免字段之间互相矛盾。
-    const current = realEntries()
-    const tampered = current
-      .filter((entry) => {
-        const want = lastWrote.get(entry.options.id)
-        return want !== undefined && String(entry.options.order) !== want
-      })
-      .map((entry) => entry.options.id)
-    if (current.length > 0 && lastWrote.size > 0) {
-      if (tampered.length === 0) {
-        // 连续多次干净才敢宣布冲突结束。
-        conflictStrikes = Math.max(0, conflictStrikes - 1)
-        if (conflictStrikes === 0) conflict = null
-      } else {
-        conflictStrikes += 1
-        conflict = { strikes: conflictStrikes, paused: conflictStrikes >= 3, panels: tampered, at: new Date().toISOString() }
-        if (conflictStrikes >= 3) paused = true
-      }
-    }
+    const all = allEntries()
+    const natives = nativeEntries(all)
     api.report({
       version,
       kind: 'rebuild',
@@ -1035,17 +964,17 @@ export function createRailController({ ctx, store, i18n, api, version }) {
       selectProbe,
       clickProbe,
       flyoutListeners: flyoutCleanup !== null,
-      live: current.map((entry) => entry.options.id),
-      // 注册表里每个条目真正的 order（含本插件写进去的值），以及计划里的行顺序。
-      // 「画出来的顺序」与这两者都不一致时，问题在内核的排序/渲染，不在计划。
-      ledgerOrders: current.map((entry) => `${entry.options.id}=${String(entry.options.order)}`),
-      // 谁覆盖了我们的值：lastWrote 是我们写下的，ledgerOrders 是现在注册表里的。
-      appliedOrders: current.map((entry) => `${entry.options.id}=${lastWrote.get(entry.options.id) ?? '?'}`),
-      conflict,
-      conflictStrikes,
-      paused,
+      // 原生条目（别人的）与我们自己的遮蔽条目分开报，一眼能看出收敛状态。
+      live: natives.map((entry) => entry.options.id),
+      shadowed: [...shadows.keys()],
+      shadowCount: shadows.size,
+      entries: all.length,
+      nativeEntries: natives.length,
+      ledgerOrders: natives.map((entry) => `${entry.options.id}=${String(entry.options.order)}`),
+      appliedOrders: [...shadows.entries()].map(([id, shadow]) => `${id}@p${shadow.priority}`),
+      // 我们的条目被别的插件用更低 priority 盖住时记在这里（正常应为空）。
+      overshadowed,
       planRows: plan.rows.map((row) => `${row.kind}:${row.id}@${row.order}`),
-      entries: current.length,
       groups: plan.groups.size,
       groupRows: [...plan.groups.keys()].length,
       activePanelId: activeId(),
@@ -1169,23 +1098,35 @@ export function createRailController({ ctx, store, i18n, api, version }) {
     }
   }
 
-  /** 重建计划并改写注册表。 */
+  /** 重建计划并同步条目。 */
   function rebuild() {
     if (!started || disposed || applying) return
     applying = true
     try {
-      const entries = realEntries()
-      captureOriginals(entries)
-      const live = livePanels(entries)
-      const nextPlan = buildPlan(store.getSnapshot().config, live)
-      syncGroups(nextPlan)
-      let mutated = false
-      for (const entry of entries) {
-        if (applyEntry(entry, nextPlan)) mutated = true
+      const all = allEntries()
+      const natives = nativeEntries(all)
+      // 刷新原生快照：名称/组件都取自别人的条目，我们自己从不写它们。
+      nativeLabels.clear()
+      nativeComponents.clear()
+      for (const entry of natives) {
+        const id = entry.options.id
+        if (!nativeLabels.has(id)) nativeLabels.set(id, resolveLabel(entry.options.label) ?? id)
+        if (!nativeComponents.has(id)) nativeComponents.set(id, entry.component)
       }
+      const live = livePanels(natives)
+      const nextPlan = buildPlan(store.getSnapshot().config, live)
       plan = nextPlan
+      syncGroups(nextPlan)
+      syncShadows(nextPlan, natives)
+      // 被别的插件用更低 priority 盖住的格子：只报告，不抢——抢就会变成对写。
+      const winners = new Set()
+      try {
+        for (const entry of ctx.slots.entriesOfSlot('sidebar.panellist')) winners.add(entry.options.id)
+      } catch {
+        // ignore
+      }
+      overshadowed = [...shadows.keys()].filter((id) => !winners.has(id))
       bumpAndNotify()
-      if (mutated) nudge()
       reportSoon()
     } finally {
       applying = false
@@ -1261,11 +1202,8 @@ export function createRailController({ ctx, store, i18n, api, version }) {
     }
     try {
       unsubscribeDeclared = ctx.slots.inject('sidebar.panellist', () => {
-        slotReady = true
         schedule()
-        return () => {
-          slotReady = false
-        }
+        return () => {}
       })
     } catch {
       unsubscribeDeclared = null
@@ -1300,55 +1238,12 @@ export function createRailController({ ctx, store, i18n, api, version }) {
     flyoutCleanup = null
     openGroup = null
     openAnchor = null
-    for (const disposers of groupDisposers.values()) {
-      for (const disposeGroup of disposers) {
-        try {
-          disposeGroup()
-        } catch {
-          // ignore
-        }
-      }
-    }
-    groupDisposers.clear()
-    // 恢复原始 order/label/component。
-    let restored = false
-    for (const original of originals.values()) {
-      const entry = original.entry
-      if (entry === undefined) continue
-      const touched = original.touched ?? {}
-      // 条目已经被更新的某一代认领 → 本代无权回滚，碰它就是制造竞态。
-      if (entry[ENTRY_OWNER] !== owner) continue
-      try {
-        if (Object.prototype.hasOwnProperty.call(touched, 'order')
-          && entry.options.order === touched.order) {
-          if (original.order === undefined) delete entry.options.order
-          else entry.options.order = original.order
-          restored = true
-        }
-        if (Object.prototype.hasOwnProperty.call(touched, 'label')
-          && entry.options.label === touched.label) {
-          if (original.label === undefined) delete entry.options.label
-          else entry.options.label = original.label
-          restored = true
-        }
-        if (Object.prototype.hasOwnProperty.call(touched, 'component')
-          && entry.component === touched.component) {
-          entry.component = original.component
-          restored = true
-        }
-      } catch {
-        // ignore one broken entry
-      }
-    }
-    for (const original of originals.values()) {
-      const entry = original.entry
-      if (entry !== undefined && entry[ENTRY_OWNER] === owner) delete entry[ENTRY_OWNER]
-    }
-    originals.clear()
-    wrappers.clear()
-    labelThunks.clear()
-    lastWrote.clear()
-    if (restored) nudge()
+    // 只摘自己的东西：别人的条目从来没被写过，不需要回滚。
+    for (const id of [...shadows.keys()]) disposeShadow(id)
+    for (const groupId of [...groupDisposers.keys()]) disposeGroup(groupId)
+    ownWrappers.clear()
+    nativeLabels.clear()
+    nativeComponents.clear()
     if (styleElement !== null && styleElement.isConnected) styleElement.remove()
     styleElement = null
     for (const nav of document.querySelectorAll(`[${RAIL_ATTR}]`)) nav.removeAttribute(RAIL_ATTR)
@@ -1364,14 +1259,14 @@ export function createRailController({ ctx, store, i18n, api, version }) {
       return plan
     },
     getLive() {
-      return livePanels(realEntries())
+      return livePanels(nativeEntries())
     },
     getRailElement() {
       return railElement
     },
     /** 某个面板的原始图标组件（设置页预览用）。 */
     originalComponent(id) {
-      return originals.get(id)?.component ?? null
+      return nativeComponents.get(id) ?? null
     },
     selectPanel,
     canSelectPanel,
@@ -1386,15 +1281,24 @@ export function createRailController({ ctx, store, i18n, api, version }) {
     portalResolved() {
       return PORTAL !== null
     },
-    /** 与另一个左栏管理插件的冲突状态，供设置页显示。 */
+    /**
+     * 与另一个左栏管理插件的冲突状态，供设置页显示。
+     *
+     * 现在的冲突形态只有一种：我们为某格注册的遮蔽条目被对方用更低的 priority
+     * 盖住了。这种局面不需要也不应该「抢回来」——抢就是对着写，正是早期卡死的
+     * 来源。这里只如实报告，让用户知道该重载或卸掉哪一个。
+     */
     getConflict() {
-      return conflict
+      if (overshadowed.length === 0) return null
+      return {
+        strikes: 1,
+        paused: false,
+        panels: [...overshadowed],
+        at: new Date().toISOString(),
+      }
     },
-    /** 用户手动重试：清零计数、解除暂停、立刻重建。 */
+    /** 用户手动重试：重新算一遍计划并同步。 */
     resume() {
-      conflictStrikes = 0
-      conflict = null
-      paused = false
       schedule()
     },
   }

@@ -21,6 +21,10 @@ Railkeeper is a drop-in replacement for the unmaintained `dsh-panellist`, writte
 
 Configuration is the only state Railkeeper owns. It never rewrites the profile's `cordis.patch.yml`, and a broken config file is copied aside (`.corrupt-<timestamp>`) instead of being discarded.
 
+Edits are written automatically about half a second after you stop. The status line under the title says whether the current state is saved; a failed write keeps your changes on screen and offers a Retry button.
+
+The settings page ends with a link to the [GitHub repository](https://github.com/lcy362/dsh-railkeeper) — if it is useful to you, a star makes the author's day. "Maybe later" dismisses it for good.
+
 ## Install
 
 ```bash
@@ -31,13 +35,17 @@ Or install a local checkout from **Settings → Plugins → Add plugin**.
 
 Then open **Settings → Panel list**.
 
-## Important: do not run two rail managers at once
+## Coexisting with other rail plugins
 
-Railkeeper rewrites the `sidebar.panellist` registrations that the sidebar shell reads. Any other plugin doing the same will fight it, and the two will overwrite each other in a loop.
+Railkeeper **never rewrites another plugin's registration entries**. For a panel it needs to change, it registers a *shadow entry* of its own — same id, one priority step below every other registrant in that cell — and the host picks the winner by priority. As a result:
 
-The transition that catches people: **if you just disabled `dsh-panellist` and did not reload the page, its client half is still loaded** and still rewriting the same entries. Railkeeper detects this, stops rewriting order and names, and shows a banner asking you to reload the page (or restart the app). Hide markers are still applied, so nothing is lost.
+- Presentation-only plugins keep working: a panel you have not touched is not shadowed at all, so the market's update badge still shows.
+- Another plugin that *also* manages the rail (most often a just-disabled `dsh-panellist` whose client half is still loaded) no longer produces a write-trading loop: each side owns its own entries and the pair converges in one pass.
+- Uninstalling railkeeper removes only its own entries; everyone else's registrations are left exactly as they were.
 
-Reload the page once and Railkeeper owns the rail on its own.
+If railkeeper finds its shadow entry in some cell outranked by a lower priority, the settings page says so and suggests reloading (Cmd+R) or restarting. It does **not** try to win it back — trading writes is exactly what made earlier versions hang.
+
+One known trade-off: the plugin market only attaches its update badge when a cell has exactly one registration, so it will not attach it to a cell railkeeper shadows. That is the market's own rule and railkeeper cannot bypass it; the badge returns once the shadow is gone.
 
 ## Compatibility
 

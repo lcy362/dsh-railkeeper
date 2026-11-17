@@ -26,6 +26,24 @@ import {
 
 const h = React.createElement
 
+/**
+ * 仓库地址：设置页底部的 star 导流入口指向它。
+ *
+ * 只此一处，改仓库不用翻代码。`STAR_DISMISS_KEY` 是「以后再说」的本地记忆：
+ * 点了就记住，之后不再反复出现——导流最忌讳的就是每次打开设置都糊脸。
+ */
+const REPO_URL = 'https://github.com/lcy362/dsh-railkeeper'
+const STAR_DISMISS_KEY = 'dsh-railkeeper.star-dismissed'
+
+/** 读取「以后再说」的本地记忆；读不到（隐私模式 / 无 localStorage）就当没点过。 */
+function readStarDismissed() {
+  try {
+    return window.localStorage.getItem(STAR_DISMISS_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
 /** @param {any} store */
 function useStore(store) {
   return React.useSyncExternalStore(store.subscribe, store.getSnapshot, store.getSnapshot)
@@ -126,6 +144,7 @@ export function RailkeeperSection({ store, rail, i18n, api, close }) {
   const [migrateArmed, setMigrateArmed] = React.useState(false)
   const [migrateNote, setMigrateNote] = React.useState(/** @type {string | null} */ (null))
   const ioRef = React.useRef(/** @type {HTMLTextAreaElement | null} */ (null))
+  const [starDismissed, setStarDismissed] = React.useState(readStarDismissed)
   const conflict = rail.getConflict()
 
   React.useEffect(() => {
@@ -446,6 +465,50 @@ export function RailkeeperSection({ store, rail, i18n, api, close }) {
         ),
       )
       : null,
+    starDismissed ? null : h(
+      'section',
+      { className: 'rk-star' },
+      h(
+        'div',
+        { className: 'rk-star-body' },
+        h('strong', { className: 'rk-star-title' }, t('star.title')),
+        h('p', { className: 'rk-star-text' }, t('star.body')),
+      ),
+      h(
+        'div',
+        { className: 'rk-star-actions' },
+        h('button', {
+          type: 'button',
+          className: 'rk-btn rk-btn-primary',
+          onClick: () => {
+            try {
+              window.open(REPO_URL, '_blank', 'noopener,noreferrer')
+            } catch {
+              // 打不开就退化成普通链接，见下面的 fallback
+            }
+          },
+        }, t('star.action')),
+        h('button', {
+          type: 'button',
+          className: 'rk-btn',
+          onClick: () => {
+            setStarDismissed(true)
+            try {
+              window.localStorage.setItem(STAR_DISMISS_KEY, '1')
+            } catch {
+              // 记不住就只是这次不再显示，不影响其它功能
+            }
+          },
+        }, t('star.dismiss')),
+      ),
+      // 兜底：某些环境里 window.open 被拦，留一个真链接可点（也方便右键复制）。
+      h('a', {
+        className: 'rk-star-link',
+        href: REPO_URL,
+        target: '_blank',
+        rel: 'noreferrer',
+      }, REPO_URL),
+    ),
     h(
       'footer',
       { className: 'rk-footer' },
@@ -799,5 +862,12 @@ const CSS = `
 .rk-conflict strong { font-size: 13px; }
 .rk-conflict p { margin: 0; color: var(--dsw-alias-label-secondary); }
 .rk-conflict-panels { font-family: var(--dsw-font-mono, ui-monospace, monospace); font-size: 11px; }
+.rk-star { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; padding: 12px 14px; box-sizing: border-box; border: 1px solid var(--dsw-alias-separator-primary); border-radius: var(--dsw-radius-md); background: var(--dsw-alias-bg-layer-2); }
+.rk-star-body { flex: 1; min-width: 220px; display: flex; flex-direction: column; gap: 2px; }
+.rk-star-title { font-size: 13px; line-height: 20px; }
+.rk-star-text { margin: 0; font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-secondary); }
+.rk-star-actions { display: flex; align-items: center; gap: 8px; flex: none; }
+.rk-star-link { flex-basis: 100%; font-size: 11px; line-height: 16px; color: var(--dsw-alias-label-caption); text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rk-star-link:hover { text-decoration: underline; color: var(--dsw-alias-label-secondary); }
 .rk-footer { display: flex; flex-direction: column; gap: 2px; padding-top: 6px; border-top: 1px solid var(--dsw-alias-separator-primary); color: var(--dsw-alias-label-caption); font-size: 11px; line-height: 16px; }
 `

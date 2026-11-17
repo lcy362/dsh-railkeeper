@@ -11,7 +11,7 @@ import { createSettingsComponent } from './settings.js'
 import { createConfigStore } from './store.js'
 
 /** 与 package.json 对齐；客户端改动时同步递增后缀，便于从 /client-status 确认现场版本。 */
-export const CLIENT_VERSION = '0.1.0+client.35'
+export const CLIENT_VERSION = '0.1.2+client.36'
 
 export const name = 'dsh-railkeeper'
 
