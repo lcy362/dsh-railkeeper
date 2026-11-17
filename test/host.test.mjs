@@ -14,9 +14,9 @@ import { normalizeConfig } from '../src/shared/config.js'
 const tempHome = () => mkdtemp(join(tmpdir(), 'railkeeper-test-'))
 
 /** 起一个真的 HTTP 服务，走完整的请求路径而不是直接调 handler。 */
-async function withServer(home, run) {
+async function withServer(home, run, hooks = {}) {
   const store = new ConfigStore({ home, profileId: 'test' })
-  const server = createServer(createApiHandler(store))
+  const server = createServer(createApiHandler(store, hooks))
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
   const { port } = server.address()
   const base = `http://127.0.0.1:${port}${API_PREFIX}`
@@ -264,5 +264,59 @@ test('路由：现场上报在内存里保留最近若干条', async () => {
     assert.equal(records.records.length, 1)
     assert.equal(records.records[0].railFound, true)
     assert.equal(records.records[0].profileId, 'test')
+  })
+})
+
+test('路由：DSH 栅栏返回 403 时直接拒绝', async () => {
+  const home = await tempHome()
+  await withServer(home, async ({ base }) => {
+    const response = await fetch(`${base}/health`)
+    assert.equal(response.status, 403)
+  }, { requestRejection: () => 403 })
+})
+
+test('路由：DSH 栅栏返回 401 时退回本地判据（回环请求放行）', async () => {
+  // 桌面端页面由 dsh-app:// 加载，与 127.0.0.1 不同源，fetch 不一定带得上
+  // auth cookie。一律按 401 拒会把界面读数整个掐死。
+  const home = await tempHome()
+  await withServer(home, async ({ base }) => {
+    const response = await fetch(`${base}/health`)
+    assert.equal(response.status, 200)
+  }, { requestRejection: () => 401 })
+})
+
+test('路由：DSH 栅栏自己抛错时不能让请求崩掉', async () => {
+  const home = await tempHome()
+  await withServer(home, async ({ base }) => {
+    const response = await fetch(`${base}/health`)
+    assert.equal(response.status, 200, '栅栏异常时退回本地判据，而不是 500')
+  }, {
+    requestRejection: () => {
+      throw new Error('service exploded')
+    },
+  })
+})
+
+test('路由：写请求不声明 JSON 时回 415', async () => {
+  const home = await tempHome()
+  await withServer(home, async ({ base }) => {
+    const response = await fetch(`${base}/config/reset`, {
+      method: 'POST',
+      headers: { 'content-type': 'text/plain' },
+      body: '{}',
+    })
+    assert.equal(response.status, 415)
+  })
+})
+
+test('路由：PUT 不声明 JSON 时同样回 415', async () => {
+  const home = await tempHome()
+  await withServer(home, async ({ base }) => {
+    const response = await fetch(`${base}/config`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: 'config=%7B%7D',
+    })
+    assert.equal(response.status, 415)
   })
 })

@@ -1,6 +1,6 @@
 {
   "name": "dsh-railkeeper",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Railkeeper for DeepSeek Harness: reorder, rename, hide, re-icon and group the left rail panels. Changes apply instantly and survive restarts.",
   "repository": {
     "type": "git",

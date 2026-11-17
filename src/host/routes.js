@@ -10,9 +10,21 @@
  *   GET  /client-status  读取最近的上报
  *   GET  /legacy         读取 dsh-panellist 的旧配置并转换形状（迁移用）
  *
- * 两道栅栏：
- * - loopback：socket 对端必须是本机回环，且 Host 头必须是回环权威；
- * - 写入来源：带 Origin 的写请求必须与 Host 同源（DNS rebinding 防护）。
+ * 三层准入，缺一不可：
+ *
+ *   1. **DSH 的信任栅栏**（`ctx.connection.requestRejection`，见 ../host/index.js）。
+ *      `webServer.register` 挂上的路由不经过 DSH 自己的 Host/Origin 准入，所以
+ *      插件必须主动去问它。这一层是权威判据。
+ *   2. **本地兜底**（`isLoopbackRequest`）：socket 对端是回环，且 Host 头是回环
+ *      权威。为什么不能只比 Origin 与 Host：DNS rebinding 之后两者会一起变成
+ *      攻击者的域名，比较相等反而通过；要求 Host 是回环才真的挡住。
+ *   3. **写请求必须是 JSON**（`isJsonRequest`）：浏览器对 application/json 会先
+ *      发预检，跨站表单无法自带这个头，于是简单请求类 CSRF 被挡在外面。
+ *
+ * 对 401 与 403 区别对待：403 是 Host/Origin 栅栏拒绝；401 是"可信但未认证"。
+ * 桌面端页面由 `dsh-app://` 协议加载，与 127.0.0.1 不同源，它的 fetch 不一定
+ * 带得上 auth cookie —— 一律按 401 拒会把界面读数整个掐死，所以 401 交给第 2
+ * 层判（跨站形态仍被第 2 层挡住）。
  */
 import { SCHEMA_VERSION } from '../shared/config.js'
 
@@ -70,6 +82,19 @@ function hasSameOrigin(req) {
   } catch {
     return false
   }
+}
+
+/**
+ * 写请求是否声明了 JSON 请求体。
+ *
+ * 浏览器对 `application/json` 会先发预检，跨站表单无法伪造这个头，所以
+ * "必须声明 JSON"本身就是一条 CSRF 防线（简单请求类）。
+ * @param {import('node:http').IncomingMessage} req
+ */
+function isJsonRequest(req) {
+  const raw = req.headers['content-type']
+  if (typeof raw !== 'string') return false
+  return raw.split(';')[0].trim().toLowerCase() === 'application/json'
 }
 
 /**
@@ -145,7 +170,7 @@ function respondError(res, status, error, details) {
  * 创建前缀路由处理函数。
  * @param {import('./store.js').ConfigStore} store
  */
-export function createApiHandler(store) {
+export function createApiHandler(store, hooks = {}) {
   /** @type {Array<Record<string, unknown>>} */
   const clientRecords = []
 
@@ -155,8 +180,30 @@ export function createApiHandler(store) {
    */
   return function handle(req, res) {
     void (async () => {
+      // 第 1 层：DSH 自己的信任栅栏（web carrier 在时才有）。
+      // `webServer.register` 挂的路由不经过 DSH 的准入，所以必须主动问一次。
+      if (typeof hooks.requestRejection === 'function') {
+        let rejection
+        try {
+          rejection = hooks.requestRejection(req)
+        } catch {
+          rejection = undefined
+        }
+        if (rejection === 403) {
+          respondError(res, 403, 'request rejected')
+          return
+        }
+        // 401（可信但未认证）不在此拒绝：见文件头说明，交给第 2 层。
+      }
+      // 第 2 层：本地兜底（回环对端 + 回环 Host）。
       if (!isLoopbackRequest(req)) {
         respondError(res, 403, 'loopback access only')
+        return
+      }
+      // 第 3 层：写请求必须声明 JSON。
+      const rawMethod = (req.method ?? 'GET').toUpperCase()
+      if ((rawMethod === 'POST' || rawMethod === 'PUT') && !isJsonRequest(req)) {
+        respondError(res, 415, 'content-type must be application/json')
         return
       }
       let url

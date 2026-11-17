@@ -53,6 +53,12 @@ One JSON document at `$DSH_HOME/railkeeper.json`, split per profile:
 - Rows for panels that are not currently registered are kept, so reinstalling a plugin restores its position. They are listed under "Configured but not installed".
 - An invalid document is never written. On read, a corrupt file is copied to `railkeeper.json.corrupt-<timestamp>` and an empty configuration is served; the file is never deleted.
 
+## Route access
+
+`/railkeeper/api/*` is mounted with `webServer.register`, which DSH does **not** put behind its own Host/Origin admission. Railkeeper therefore asks `ctx.connection.requestRejection(req)` itself on every request, then falls back to requiring a loopback peer and a loopback `Host` (a plain `Origin`-versus-`Host` comparison is bypassable by DNS rebinding), then requires `application/json` on writes.
+
+A `403` from the fence is honoured. A `401` falls through to the loopback check instead of being refused, because the desktop page is served from `dsh-app://` and its `fetch` may not carry the auth cookie; refusing it would blank the UI while blocking nothing extra — cross-site shapes still fail the loopback check.
+
 ## Self-test
 
 Shortly after load, railkeeper runs an invisible self-test (the menu it opens is not painted and does not take focus) over the two paths that fail silently: selecting a panel through `layout.selectPanel`, and clicking a flyout item through a real `MouseEvent`. Results are `selectProbe` and `clickProbe` in `GET /railkeeper/api/client-status`.

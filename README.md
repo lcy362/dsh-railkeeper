@@ -50,7 +50,13 @@ The one internal seam it does use: rewriting a slot registration's `options` doe
 
 ## HTTP surface
 
-All endpoints live under `/railkeeper/api`, are reachable only from loopback, and are also fenced by `Host`; write requests additionally require same-origin (or no `Origin` at all, which is the Desktop IPC bridge).
+All endpoints live under `/railkeeper/api` and pass three admission layers, in this order:
+
+1. **DSH's own trust fence** — every request asks `ctx.connection.requestRejection(req)` first. Routes mounted with `webServer.register` do not go through DSH's Host/Origin admission on their own, so the plugin has to ask. This is the authoritative check.
+2. **A local fallback** — the socket peer must be loopback *and* the `Host` header must name a loopback authority. Comparing only `Origin` against `Host` is bypassable by DNS rebinding, where both become the attacker's domain; requiring a loopback `Host` is what actually stops it. `sec-fetch-site: cross-site` is refused.
+3. **JSON for writes** — `POST`/`PUT` must declare `application/json`. A cross-site form cannot send that without a preflight, so this closes the simple-request CSRF class. The browser half always sends it.
+
+A `403` from the fence is rejected outright. A `401` (trustworthy but unauthenticated) is *not*: the desktop page is loaded over `dsh-app://`, not `http://127.0.0.1`, so its `fetch` may not carry the auth cookie — refusing that would blank the UI. It falls through to layer 2, which still blocks the cross-site shapes.
 
 | Method | Path | Purpose |
 |---|---|---|

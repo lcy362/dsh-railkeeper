@@ -50,7 +50,13 @@ Railkeeper 刻意**不依赖**任何 Harness 客户端包（React 除外）：�
 
 ## HTTP 接口
 
-全部挂在 `/railkeeper/api` 下，只允许回环访问，并额外校验 `Host`；写请求还要求同源（完全没有 `Origin` 的情况放行，那是桌面版的 IPC 桥）。
+全部挂在 `/railkeeper/api` 下，按顺序过三道准入：
+
+1. **DSH 自己的信任栅栏** —— 每个请求先问 `ctx.connection.requestRejection(req)`。用 `webServer.register` 挂上的路由**不经过** DSH 自己的 Host/Origin 准入，所以插件必须主动问。这一层是权威判据。
+2. **本地兜底** —— socket 对端必须是回环，且 `Host` 头必须是回环权威。为什么不能只比 `Origin` 与 `Host`：DNS rebinding 之后两者会一起变成攻击者的域名，比较相等反而通过；要求 `Host` 是回环才真的挡住。`sec-fetch-site: cross-site` 一律拒绝。
+3. **写请求必须是 JSON** —— `POST`/`PUT` 必须声明 `application/json`。跨站表单无法不带预检就发这个头，于是简单请求类 CSRF 被挡住。浏览器半区一直是这么发的。
+
+栅栏返回 `403` 直接拒；返回 `401`（可信但未认证）**不**拒：桌面端页面由 `dsh-app://` 加载，不是 `http://127.0.0.1`，它的 `fetch` 不一定带得上 auth cookie，一律拒会把界面掐死。`401` 交给第 2 层判，跨站形态仍被挡住。
 
 | 方法 | 路径 | 用途 |
 |---|---|---|
