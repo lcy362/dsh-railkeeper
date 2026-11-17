@@ -133,6 +133,35 @@ const CSS = `
 .rk-empty { margin: 24px 0; color: var(--dsw-alias-label-secondary); font-size: 13px; }
 `
 
+/**
+ * 是否允许自检真的切换面板。
+ *
+ * 自检要回答的问题是「点分组菜单里的成员，会不会切过去」——唯一的验证办法就是
+ * 真的切一次再切回来。但 `layout.selectPanel()` 会 `abort()` 当前导航并立刻提交
+ * 一次状态，中间那一帧是用户真能看见的：侧栏那一行（以及它所属的分组行）会闪
+ * 一下选中态。曾经以为「两次变更在同一个 tick 里、React 会合并」就看不见，这个
+ * 假设是错的——订阅者会在 abort 时同步响应，帧照常提交。
+ *
+ * 所以默认**不跑**：生产环境里为了诊断而真实操作用户的应用，代价太大。
+ * 需要排查时用 `localStorage['dsh-railkeeper.probe'] = '1'` 打开后重载，
+ * 或直接用设置页的「跑一次自检」按钮。
+ */
+const PROBE_FLAG = 'dsh-railkeeper.probe'
+
+/** 自检开关：默认关。 */
+function probeEnabled() {
+  try {
+    if (typeof window !== 'undefined' && window.localStorage?.getItem(PROBE_FLAG) === '1') return true
+  } catch {
+    // 隐私模式读不到 localStorage，按关闭处理
+  }
+  try {
+    return typeof navigator !== 'undefined' && navigator.userAgent.includes('RailkeeperProbe')
+  } catch {
+    return false
+  }
+}
+
 /** @param {unknown} ctx */
 function safeGet(ctx, name) {
   try {
@@ -1028,6 +1057,12 @@ export function createRailController({ ctx, store, i18n, api, version }) {
     report(true)
   }
 
+  /** 自检未开启时，把「没跑」这件事明确记下来，免得和「跑了但失败」混在一起。 */
+  function markProbeSkipped() {
+    if (selectProbe === null) selectProbe = { skipped: 'probe-disabled' }
+    if (clickProbe === null) clickProbe = { skipped: 'probe-disabled' }
+  }
+
   /**
    * 自检第二步：把弹出菜单真的打开，往第一个菜单项上派发一次点击，读回结果。
    *
@@ -1172,7 +1207,15 @@ export function createRailController({ ctx, store, i18n, api, version }) {
   function start() {
     if (started || disposed) return
     started = true
-    ensureStyle()
+    // 样式只是「隐藏整行」和弹层外观，装不上不该拖垮整个控制器：
+    // 顺序、改名、图标、分组都还能工作，只是隐藏退化成不生效。
+    // 早期这里直接裸调，一次环境异常（比如极早期的 document）就让 start()
+    // 中途抛错，于是后面所有监听和首次重建都不会注册——表现为整个插件「没反应」。
+    try {
+      ensureStyle()
+    } catch (error) {
+      layoutNotes.push(`style-failed:${error instanceof Error ? error.message : String(error)}`)
+    }
     // layout 是可选服务：用 ctx.inject 声明依赖后取，这是内核支持的取法。
     // 直接 ctx.get('layout') 拿到的东西不保证可用（未声明 inject 时内核的行为
     // 是实现细节），而取不到时这里只会表现为「点了没反应」，最难查。
@@ -1208,14 +1251,18 @@ export function createRailController({ ctx, store, i18n, api, version }) {
     } catch {
       unsubscribeDeclared = null
     }
-    // 起动后跑一次自检：先等计划建好，再直接验一遍「选中成员」这条路。
-    setTimeout(() => {
-      if (disposed) return
-      probeSelect()
+    // 自检默认不跑：它会真的切一次面板，用户看得见那一帧闪烁（见 PROBE_FLAG）。
+    if (probeEnabled()) {
       setTimeout(() => {
-        if (!disposed) probeMenuClick()
-      }, 300)
-    }, 1200)
+        if (disposed) return
+        probeSelect()
+        setTimeout(() => {
+          if (!disposed) probeMenuClick()
+        }, 300)
+      }, 1200)
+    } else {
+      markProbeSkipped()
+    }
     if (store.getSnapshot().status !== 'loading') schedule()
     else {
       const unsubscribe = store.subscribe(() => {
@@ -1300,6 +1347,19 @@ export function createRailController({ ctx, store, i18n, api, version }) {
     /** 用户手动重试：重新算一遍计划并同步。 */
     resume() {
       schedule()
+    },
+    /**
+     * 手动跑一次自检（设置页的「跑一次自检」按钮用）。
+     *
+     * 明确由用户触发，所以可以真的切面板——这是他要的。跑完把结果放进诊断记录，
+     * 界面上会看到侧栏闪一下，属于预期。
+     */
+    runProbe() {
+      if (disposed) return
+      probeSelect()
+      setTimeout(() => {
+        if (!disposed) probeMenuClick()
+      }, 300)
     },
   }
 }

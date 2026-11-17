@@ -102,16 +102,24 @@ A `403` from the fence is rejected outright. A `401` (trustworthy but unauthenti
 
 ```bash
 node scripts/build-client.mjs   # build lib/client.js from src/client/
-node --test "test/*.test.mjs"   # 51 tests: config, plan, host store, routes, migration
+node --test "test/*.test.mjs"   # 85 tests: config, plan, shadow diffing, store, host, routes, migration, self-test
 ```
 
 `src/client/*` is plain ES modules. The build inlines them into the single browser bundle DSH expects (`window.__ModuleLoader__.load({ id, factory })`), because runtime `require()` only resolves platform seeds.
 
 After changing `src/client/*`, rebuilding is picked up by the client HMR without restarting the app; changing `src/host/*` needs an app restart. Bump `CLIENT_VERSION` in `src/client/index.js` when you change client code — it is reported to `/client-status` so you can confirm which generation is live.
 
+## Self-test (off by default)
+
+The self-test covers the two paths that fail silently: `selectProbe` selects a panel through `layout.selectPanel` and reads `activePanelId` back, and `clickProbe` dispatches a real `MouseEvent` at the first flyout item.
+
+**It does not run automatically, because verifying the path has a side effect.** Proving that "clicking switches the panel" requires actually switching once and switching back, and `layout.selectPanel()` aborts the current navigation and notifies subscribers synchronously — so the intermediate frame is committed and visible, and the rail row (plus the group row that owns it) flashes as selected.
+
+Trigger it when you need it: **Settings → Panel list → Run self-test** (it asks for confirmation), or set `localStorage['dsh-railkeeper.probe'] = '1'` and reload. When it has not run, both probes read `{ skipped: 'probe-disabled' }` in `GET /railkeeper/api/client-status`, which stays distinguishable from a failed run.
+
 ## Verification status
 
-`test/` covers the configuration model, the render plan, the flyout placement math, the host store, the loopback routes, and the `dsh-panellist` migration.
+`test/` covers the configuration model, the render plan, shadow-entry diffing against a SlotCore-equivalent registry, the config store's write path, the flyout placement math, the host store, the loopback routes, the `dsh-panellist` migration, and the self-test gating.
 
 The DOM paths are **not** unit-tested: rewriting rail rows, hiding, and the group flyout all need a real browser. They are verified in a running app by reading the real DOM after each rebuild — row count, visible row count, per-row labels, hidden-marker count, and group-row marker count are reported to `/client-status` and compared against the plan. Every stylesheet selector railkeeper injects is scoped to the rail `nav` (`[data-rk-rail]`) or to its own `.rk-*` classes, so it cannot restyle another page.
 

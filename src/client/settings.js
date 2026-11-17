@@ -145,6 +145,7 @@ export function RailkeeperSection({ store, rail, i18n, api, close }) {
   const [migrateNote, setMigrateNote] = React.useState(/** @type {string | null} */ (null))
   const ioRef = React.useRef(/** @type {HTMLTextAreaElement | null} */ (null))
   const [starDismissed, setStarDismissed] = React.useState(readStarDismissed)
+  const [probeArmed, setProbeArmed] = React.useState(false)
   const conflict = rail.getConflict()
 
   React.useEffect(() => {
@@ -158,6 +159,12 @@ export function RailkeeperSection({ store, rail, i18n, api, close }) {
     const timer = setTimeout(() => setCopied(false), 2000)
     return () => clearTimeout(timer)
   }, [copied])
+
+  React.useEffect(() => {
+    if (!probeArmed) return undefined
+    const timer = setTimeout(() => setProbeArmed(false), 4000)
+    return () => clearTimeout(timer)
+  }, [probeArmed])
 
   React.useEffect(() => {
     if (!openIo) return
@@ -368,6 +375,19 @@ export function RailkeeperSection({ store, rail, i18n, api, close }) {
         ? h('button', { type: 'button', className: 'rk-btn', onClick: () => setSelected(new Set()) }, t('actions.clearSelection'))
         : null,
       h('span', { className: 'rk-toolbar-spacer' }),
+      h('button', {
+        type: 'button',
+        className: probeArmed ? 'rk-btn rk-btn-danger' : 'rk-btn',
+        title: t('probe.hint'),
+        onClick: () => {
+          if (!probeArmed) {
+            setProbeArmed(true)
+            return
+          }
+          setProbeArmed(false)
+          rail.runProbe?.()
+        },
+      }, probeArmed ? t('probe.confirm') : t('probe.button')),
       h('button', {
         type: 'button',
         className: resetArmed ? 'rk-btn rk-btn-danger' : 'rk-btn',

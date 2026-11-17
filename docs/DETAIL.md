@@ -63,7 +63,11 @@ A `403` from the fence is honoured. A `401` falls through to the loopback check 
 
 ## Self-test
 
-Shortly after load, railkeeper runs an invisible self-test (the menu it opens is not painted and does not take focus) over the two paths that fail silently: selecting a panel through `layout.selectPanel`, and clicking a flyout item through a real `MouseEvent`. Results are `selectProbe` and `clickProbe` in `GET /railkeeper/api/client-status`.
+The self-test covers the two paths that fail silently: selecting a panel through `layout.selectPanel`, and clicking a flyout item through a real `MouseEvent`. Results are `selectProbe` and `clickProbe` in `GET /railkeeper/api/client-status`.
+
+**It is off by default, because verifying the path has a side effect.** Proving that "clicking switches the panel" requires actually switching once and switching back. `layout.selectPanel()` aborts the current navigation and notifies subscribers synchronously, so the intermediate frame is committed and visible: the rail row — and the group row that owns it — flashes as selected. The earlier assumption that two state changes in one tick would be collapsed by React into a single invisible render was wrong.
+
+Trigger it explicitly instead: **Settings → Panel list → Run self-test** (it asks for confirmation, since it really switches panels), or set `localStorage['dsh-railkeeper.probe'] = '1'` and reload to have it run once at startup. When it has not run, both probes read `{ skipped: 'probe-disabled' }`, which is distinguishable from a failed run.
 
 ## Troubleshooting
 
